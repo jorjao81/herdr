@@ -63,6 +63,7 @@ pub(super) struct ClientShellLayout {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ClientMobileTarget {
+    Todo(Vec<String>),
     Machine(ClientEndpointId),
     NewWorkspace,
     Workspace {
@@ -73,10 +74,6 @@ pub(super) enum ClientMobileTarget {
     Tab {
         endpoint_id: ClientEndpointId,
         tab_id: String,
-    },
-    Agent {
-        endpoint_id: ClientEndpointId,
-        pane_id: String,
     },
     Menu(usize),
 }
@@ -94,6 +91,7 @@ pub(super) struct ShellHitMap {
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
+    pub(super) todos: Vec<(Rect, Vec<String>)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
@@ -994,6 +992,7 @@ pub(super) struct WorkspaceEntry {
 
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
+        super::todo::start();
         let preferences = config.preferences.clone();
         let local_config_diagnostic = config.startup_config_diagnostic.take();
         let overlay = config
@@ -1831,7 +1830,7 @@ impl ClientShellState {
     }
 
     pub(crate) fn tick_copy_feedback(&mut self, now: std::time::Instant) -> bool {
-        let mut repaint = false;
+        let mut repaint = super::todo::changed();
         if self
             .copy_feedback_deadline
             .is_some_and(|deadline| now >= deadline)

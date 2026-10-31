@@ -610,143 +610,25 @@ fn mobile_items(
             });
         }
     }
-    let agents = super::aggregate_navigation::aggregate_agent_rows(
-        endpoints,
-        active_endpoint_id,
-        config.agent_panel_sort,
-    );
-    let agent_view_label = snapshot.agent_view_label.as_deref();
-    if !agents.is_empty() || agent_view_label.is_some() {
-        let title = agent_view_label
-            .map(|label| format!("agents · {label}"))
-            .unwrap_or_else(|| "agents".to_owned());
-        items.push(MobileItem::section(title, palette));
-        if agents.is_empty() {
-            items.push(MobileItem {
-                lines: vec![Line::from(Span::styled(
-                    "  no matching agents",
-                    Style::default()
-                        .fg(palette.overlay0)
-                        .bg(palette.panel_bg)
-                        .add_modifier(Modifier::DIM),
-                ))],
-                background: palette.panel_bg,
-                target: None,
-            });
-        }
-        for row in agents {
-            let endpoint = row.endpoint;
-            let agent = row.agent;
-            let workspace = endpoint
-                .snapshot
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.workspace_id == agent.workspace_id);
-            let tab = endpoint
-                .snapshot
-                .tabs
-                .iter()
-                .find(|tab| tab.tab_id == agent.tab_id);
-            let agent_label = agent
-                .display_agent
-                .as_deref()
-                .or(agent.name.as_deref())
-                .or(agent.agent.as_deref())
-                .unwrap_or("agent");
-            let primary = workspace
-                .map(|workspace| workspace.label.as_str())
-                .unwrap_or(agent_label);
-            let mut detail = Vec::new();
-            let workspace_tab_count = endpoint
-                .snapshot
-                .tabs
-                .iter()
-                .filter(|candidate| candidate.workspace_id == agent.workspace_id)
-                .count();
-            if let Some(tab) = tab.filter(|tab| tab.custom_label || workspace_tab_count > 1) {
-                detail.push(tab.label.clone());
-            }
-            let status_key = status_text(agent.agent_status);
-            detail.push(
-                agent
-                    .state_labels
-                    .iter()
-                    .find(|(key, _)| key == status_key)
-                    .map(|(_, label)| label.clone())
-                    .unwrap_or_else(|| {
-                        if agent.agent_status == crate::api::schema::AgentStatus::Unknown {
-                            "idle".to_owned()
-                        } else {
-                            status_key.to_owned()
-                        }
-                    }),
-            );
-            detail.push(agent_label.to_owned());
-            if endpoint.stale() {
-                detail.push(mobile_endpoint_state(endpoint.status).to_owned());
-            }
-            let background = if endpoint.endpoint_id == active_endpoint_id && agent.focused {
-                palette.surface_dim
-            } else {
-                palette.panel_bg
-            };
-            let foreground = if endpoint.stale() {
-                palette.overlay0
-            } else {
-                palette.text
-            };
-            let dim = if endpoint.stale() {
-                Modifier::DIM
-            } else {
-                Modifier::empty()
-            };
-            items.push(MobileItem {
-                lines: vec![
-                    Line::from(vec![
-                        Span::styled("  ", Style::default().bg(background)),
-                        Span::styled(
-                            status_icon(agent.agent_status, config.status_indicators),
-                            Style::default()
-                                .fg(if endpoint.stale() {
-                                    palette.overlay0
-                                } else {
-                                    status_color(agent.agent_status, palette)
-                                })
-                                .bg(background)
-                                .add_modifier(dim),
-                        ),
-                        Span::styled(" ", Style::default().bg(background)),
-                        Span::styled(
-                            crate::ui::truncate_end(
-                                &format!("{} · {primary}", endpoint.label),
-                                usize::from(content_width.saturating_sub(5)),
-                            ),
-                            Style::default()
-                                .fg(foreground)
-                                .bg(background)
-                                .add_modifier(Modifier::BOLD | dim),
-                        ),
-                    ]),
-                    Line::from(Span::styled(
-                        crate::ui::truncate_end(
-                            &format!("  {}", detail.join(" · ")),
-                            usize::from(content_width),
-                        ),
-                        Style::default()
-                            .fg(palette.overlay0)
-                            .bg(background)
-                            .add_modifier(dim),
-                    )),
-                ],
-                background,
-                target: Some(ClientMobileTarget::Agent {
-                    endpoint_id: endpoint.endpoint_id.clone(),
-                    pane_id: agent.pane_id.clone(),
-                }),
-            });
-        }
+    items.push(MobileItem::section("todo", palette));
+    let todos = super::todo::mobile_entries();
+    if todos.is_empty() {
+        items.push(MobileItem {
+            lines: vec![Line::from("  Nothing pending")],
+            background: palette.panel_bg,
+            target: None,
+        });
     }
-
+    for (label, action) in todos {
+        items.push(MobileItem {
+            lines: vec![Line::from(Span::styled(
+                label,
+                Style::default().fg(palette.text).bg(palette.panel_bg),
+            ))],
+            background: palette.panel_bg,
+            target: (!action.is_empty()).then_some(ClientMobileTarget::Todo(action)),
+        });
+    }
     items.push(MobileItem::section("spaces", palette));
     items.push(MobileItem::action(
         "  + new workspace",
@@ -1003,6 +885,7 @@ impl ClientShellState {
             .find(|(rect, _)| super::contains(*rect, point))
             .map(|(_, target)| target.clone());
         match target {
+            Some(ClientMobileTarget::Todo(action)) => super::todo::activate(action),
             Some(ClientMobileTarget::Machine(endpoint_id)) => {
                 if endpoint_id == self.active_endpoint_id {
                     self.mode = ClientShellMode::Terminal;
@@ -1029,19 +912,6 @@ impl ClientShellState {
                 if self.focus_or_activate(
                     endpoint_id,
                     ClientEndpointFocusTarget::Workspace(workspace_id),
-                    outcome,
-                ) {
-                    self.mode = ClientShellMode::Terminal;
-                    self.navigate_workspace_id = None;
-                }
-            }
-            Some(ClientMobileTarget::Agent {
-                endpoint_id,
-                pane_id,
-            }) => {
-                if self.focus_or_activate(
-                    endpoint_id,
-                    ClientEndpointFocusTarget::Pane(pane_id),
                     outcome,
                 ) {
                     self.mode = ClientShellMode::Terminal;

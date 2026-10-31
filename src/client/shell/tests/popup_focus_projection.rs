@@ -959,21 +959,12 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("overflowing sidebars");
 
-    for agent in [false, true] {
-        let (track, metrics) = if agent {
-            (
-                state.hits.agent_scrollbar,
-                state.hits.agent_scroll_metrics.expect("agent metrics"),
-            )
-        } else {
-            (
-                state.hits.workspace_scrollbar,
-                state
-                    .hits
-                    .workspace_scroll_metrics
-                    .expect("workspace metrics"),
-            )
-        };
+    {
+        let track = state.hits.workspace_scrollbar;
+        let metrics = state
+            .hits
+            .workspace_scroll_metrics
+            .expect("workspace metrics");
         assert!(track.width > 0);
         let thumb = crate::ui::scrollbar_thumb(metrics, track).expect("scrollbar thumb");
         assert!(thumb.len > 1);
@@ -991,11 +982,7 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
                 modifiers: KeyModifiers::empty(),
             })]);
         assert!(dragged.repaint);
-        if agent {
-            assert_eq!(state.agent_scroll, metrics.max_offset_from_bottom);
-        } else {
-            assert_eq!(state.workspace_scroll, metrics.max_offset_from_bottom);
-        }
+        assert_eq!(state.workspace_scroll, metrics.max_offset_from_bottom);
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
             column: track.x,

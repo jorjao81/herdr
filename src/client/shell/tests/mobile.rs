@@ -253,7 +253,7 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
     for expected in [
         "switch",
         "close",
-        "agents",
+        "todo",
         "spaces",
         "+ new workspace",
         "tabs",
@@ -286,32 +286,6 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
                 &request.method,
                 crate::api::schema::Method::WorkspaceFocus(params)
                     if params.workspace_id == "ws_1"
-            )
-    )));
-
-    state.compose(44, 20).expect("restored mobile header");
-    state.handle_raw_events(vec![click(state.hits.mobile_switch)]);
-    state.compose(44, 20).expect("agent switcher");
-    let agent_hit = state
-        .hits
-        .mobile_targets
-        .iter()
-        .find_map(|(rect, target)| {
-            matches!(
-                target,
-                ClientMobileTarget::Agent { pane_id, .. } if pane_id == "pane_1"
-            )
-            .then_some(*rect)
-        })
-        .expect("agent hit");
-    let focused = state.handle_raw_events(vec![click(agent_hit)]);
-    assert!(focused.actions.iter().any(|action| matches!(
-        action,
-        ClientShellAction::Endpoint { request, .. }
-            if matches!(
-                &request.method,
-                crate::api::schema::Method::PaneFocus(params)
-                    if params.pane_id == "pane_1"
             )
     )));
 

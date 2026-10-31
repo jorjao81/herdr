@@ -2141,6 +2141,15 @@ impl ClientShellState {
                     self.tab_press = Some(tab_press);
                     return;
                 }
+                if let Some((_, command)) = self
+                    .hits
+                    .todos
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                {
+                    super::todo::activate(command.clone());
+                    return;
+                }
                 if self.handle_endpoint_agent_click(point, outcome) {
                     return;
                 }
