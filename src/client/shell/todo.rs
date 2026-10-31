@@ -16,6 +16,12 @@ struct Entry {
     #[serde(default)]
     detail: String,
     #[serde(default)]
+    kind: EntryKind,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    comment: Option<Comment>,
+    #[serde(default)]
     priority: i32,
     #[serde(default)]
     visible_from: Option<u64>,
@@ -25,6 +31,121 @@ struct Entry {
     #[serde(default)]
     action: Vec<String>,
 }
+/// Providers publish the relationship/event, rather than choosing presentation.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EntryKind {
+    Meeting,
+    MergeRequest,
+    ReviewRequested,
+    AssignedComments,
+    AssignedApproved,
+    CommentReply,
+    ChangesRequested,
+    Merged,
+    CiFailed,
+    Message,
+    #[default]
+    #[serde(other)]
+    Generic,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Comment {
+    #[serde(default)]
+    author: String,
+    text: String,
+}
+
+impl EntryKind {
+    // Octicons from Nerd Fonts' glyphnames.json (git_pull_request, discussion,
+    // check_circle, reply, git_merge, calendar, bell, comment).
+    fn presentation(
+        self,
+        palette: &Palette,
+    ) -> (&'static str, &'static str, ratatui::style::Color) {
+        match self {
+            Self::Meeting => ("\u{f455}", "Upcoming meeting", palette.mauve),
+            Self::MergeRequest => ("\u{f407}", "Open MR", palette.blue),
+            Self::ReviewRequested => ("\u{f4af}", "Review requested", palette.blue),
+            Self::AssignedComments => ("\u{f442}", "Your MR · New threads", palette.peach),
+            Self::AssignedApproved => ("\u{f49e}", "Your MR · Approved", palette.green),
+            Self::CommentReply => ("\u{f4a8}", "Reply to your comment", palette.teal),
+            Self::ChangesRequested => ("\u{f41f}", "Changes requested", palette.red),
+            Self::Merged => ("\u{f419}", "Merged", palette.mauve),
+            Self::CiFailed => ("\u{f52f}", "Pipeline failed", palette.red),
+            Self::Message => ("\u{f41f}", "Unread message", palette.blue),
+            Self::Generic => ("\u{f49a}", "", palette.accent),
+        }
+    }
+}
+
+fn clean(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Two display-width-aware lines; the second ends with an ellipsis if needed.
+fn preview(text: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    if width == 0 || text.is_empty() {
+        return Vec::new();
+    }
+    let text = clean(text);
+    if UnicodeWidthStr::width(text.as_str()) <= width {
+        return vec![text];
+    }
+    let mut used = 0;
+    let mut split = text.len();
+    for (index, ch) in text.char_indices() {
+        used += ch.width().unwrap_or(0);
+        if used > width {
+            split = index;
+            break;
+        }
+    }
+    if let Some(space) = text[..split].rfind(' ').filter(|space| *space > 0) {
+        split = space;
+    }
+    vec![
+        text[..split].to_owned(),
+        crate::ui::truncate_end(text[split..].trim_start(), width),
+    ]
+}
+
+fn entry_lines(entry: &Entry, width: usize, palette: &Palette) -> Vec<(String, Style)> {
+    let (default_icon, label, color) = entry.kind.presentation(palette);
+    let icon = entry.icon.as_deref().unwrap_or(default_icon);
+    let mut lines = vec![(
+        crate::ui::truncate_end(&format!(" {} {}", icon, clean(&entry.title)), width),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )];
+    let metadata = if label.is_empty() {
+        clean(&entry.detail)
+    } else if entry.detail.is_empty() {
+        label.to_owned()
+    } else {
+        format!("{label} · {}", clean(&entry.detail))
+    };
+    if !metadata.is_empty() {
+        lines.push((
+            crate::ui::truncate_end(&format!("   {metadata}"), width),
+            Style::default().fg(palette.overlay0),
+        ));
+    }
+    if let Some(comment) = &entry.comment {
+        let text = if comment.author.is_empty() {
+            clean(&comment.text)
+        } else {
+            format!("{}: {}", clean(&comment.author), clean(&comment.text))
+        };
+        for text in preview(&text, width.saturating_sub(3)) {
+            lines.push((format!("   {text}"), Style::default().fg(palette.subtext0)));
+        }
+    }
+    lines
+}
+
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Feed {
@@ -159,22 +280,25 @@ pub(super) fn activate(command: Vec<String>) {
         tracing::warn!(%error, "could not start Todo action");
     }
 }
-pub(super) fn mobile_entries() -> Vec<(String, Vec<String>)> {
+type StyledLines = Vec<(String, Style)>;
+
+pub(super) fn mobile_entries(width: u16, palette: &Palette) -> Vec<(StyledLines, Vec<String>)> {
     let state = cache().lock().unwrap_or_else(|e| e.into_inner());
     if state.error.is_some() {
-        return vec![(" Todo feed error (see logs)".into(), Vec::new())];
+        return vec![(
+            vec![(
+                " Todo feed error (see logs)".into(),
+                Style::default().fg(palette.red),
+            )],
+            Vec::new(),
+        )];
     }
     let time = now();
     state
         .entries
         .iter()
         .filter(|e| visible(e, time))
-        .map(|e| {
-            (
-                format!(" [{}] {} {}", e.source, e.title, e.detail),
-                e.action.clone(),
-            )
-        })
+        .map(|e| (entry_lines(e, width as usize, palette), e.action.clone()))
         .collect()
 }
 
@@ -202,7 +326,6 @@ fn draw(
     if area.is_empty() {
         return;
     }
-    let style = Style::default().fg(config.palette.text);
     let muted = Style::default().fg(config.palette.overlay0);
     let header = if collapsed { 0 } else { 2.min(area.height) };
     if !collapsed {
@@ -231,13 +354,33 @@ fn draw(
     hits.agent_scrollbar = Rect::default();
     hits.agent_scroll_metrics = None;
     let time = now();
-    let count = state.entries.iter().filter(|e| visible(e, time)).count();
-    hits.agent_max_scroll = count.saturating_sub(body.height as usize);
+    let entries = state
+        .entries
+        .iter()
+        .filter(|e| visible(e, time))
+        .collect::<Vec<_>>();
+    let cards = entries
+        .iter()
+        .map(|entry| {
+            if collapsed {
+                let (icon, _, color) = entry.kind.presentation(&config.palette);
+                vec![(
+                    format!(" {}", entry.icon.as_deref().unwrap_or(icon)),
+                    Style::default().fg(color),
+                )]
+            } else {
+                entry_lines(entry, body.width as usize, &config.palette)
+            }
+        })
+        .collect::<Vec<_>>();
+    let gap = usize::from(!collapsed);
+    let total = cards.iter().map(Vec::len).sum::<usize>() + gap * cards.len().saturating_sub(1);
+    hits.agent_max_scroll = total.saturating_sub(body.height as usize);
     *scroll = (*scroll).min(hits.agent_max_scroll);
     if body.is_empty() {
         return;
     }
-    if count == 0 {
+    if entries.is_empty() {
         put_text(
             buffer,
             body.x,
@@ -251,32 +394,89 @@ fn draw(
             muted,
         );
     }
-    for (index, entry) in state
-        .entries
-        .iter()
-        .filter(|e| visible(e, time))
-        .skip(*scroll)
-        .take(body.height as usize)
-        .enumerate()
-    {
-        let rect = Rect::new(body.x, body.y + index as u16, body.width, 1);
-        let label = if collapsed {
-            format!("{}", index + 1)
-        } else if entry.detail.is_empty() {
-            format!(" [{}] {}", entry.source, entry.title)
-        } else {
-            format!(" [{}] {} · {}", entry.source, entry.title, entry.detail)
-        };
-        put_text(buffer, rect.x, rect.y, rect.width, &label, style);
-        if !entry.action.is_empty() {
-            hits.todos.push((rect, entry.action.clone()));
+    let mut offset = 0usize;
+    for (entry, lines) in entries.iter().zip(cards.iter()) {
+        let start = offset.max(*scroll);
+        let end = (offset + lines.len()).min(*scroll + body.height as usize);
+        if start < end {
+            for row in start..end {
+                let (text, style) = &lines[row - offset];
+                put_text(
+                    buffer,
+                    body.x,
+                    body.y + (row - *scroll) as u16,
+                    body.width,
+                    text,
+                    *style,
+                );
+            }
+            if !entry.action.is_empty() {
+                hits.todos.push((
+                    Rect::new(
+                        body.x,
+                        body.y + (start - *scroll) as u16,
+                        body.width,
+                        (end - start) as u16,
+                    ),
+                    entry.action.clone(),
+                ));
+            }
         }
+        offset += lines.len() + gap;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn todo_feed_comment_preview_wraps_and_card_is_clickable() {
+        let entries = parse(br#"{"entries":[{"source":"gitlab","id":"142","kind":"assigned_comments","title":"!142 Fix login","detail":"api","comment":{"author":"Avery","text":"Could we retry the request before failing? This needs a regression test."},"action":["open","https://example.com"]}]}"#).unwrap();
+        let state = Cache {
+            entries,
+            error: None,
+        };
+        let area = Rect::new(0, 0, 30, 8);
+        let config = ClientShellConfig::from_config(&Config::default());
+        let mut buffer = Buffer::empty(area);
+        let mut hits = ShellHitMap::default();
+        draw(&mut buffer, area, &config, &mut 0, &mut hits, false, &state);
+        assert_eq!(hits.todos[0].0, Rect::new(0, 2, 30, 4));
+        let text = buffer
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("Avery: Could we retry"));
+        assert!(text.contains('…'));
+        assert!(text.contains('\u{f442}'));
+        assert_eq!(hits.agent_max_scroll, 0);
+        for row in preview(
+            "你好，世界。 This is a reply with emoji 👋 and more text",
+            10,
+        ) {
+            assert!(UnicodeWidthStr::width(row.as_str()) <= 10);
+        }
+    }
+
+    #[test]
+    fn todo_feed_states_are_distinct_and_unknown_kinds_remain_usable() {
+        let palette = Palette::catppuccin();
+        let states = [
+            EntryKind::ReviewRequested,
+            EntryKind::AssignedComments,
+            EntryKind::AssignedApproved,
+            EntryKind::CommentReply,
+        ];
+        let icons = states
+            .iter()
+            .map(|kind| kind.presentation(&palette).0)
+            .collect::<HashSet<_>>();
+        assert_eq!(icons.len(), states.len());
+        let entries = parse(br#"{"entries":[{"source":"plugin","id":"1","title":"Custom","kind":"future_event","icon":"*"}]}"#).unwrap();
+        assert!(entry_lines(&entries[0], 30, &palette)[0].0.contains('*'));
+    }
+
     #[test]
     fn todo_feed_renderer_clamps_scroll_and_maps_visible_actions() {
         let state = Cache { entries: parse(br#"{"entries":[{"source":"test","id":"one","title":"First"},{"source":"test","id":"two","title":"Second","action":["helper","arg"]}]}"#).unwrap(), error: None };
@@ -294,7 +494,7 @@ mod tests {
             false,
             &state,
         );
-        assert_eq!(scroll, 1);
+        assert_eq!(scroll, 2);
         assert_eq!(hits.todos.len(), 1);
         assert_eq!(hits.todos[0].0, Rect::new(0, 2, 40, 1));
         assert_eq!(hits.todos[0].1, ["helper", "arg"]);

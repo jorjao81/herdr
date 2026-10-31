@@ -611,7 +611,7 @@ fn mobile_items(
         }
     }
     items.push(MobileItem::section("todo", palette));
-    let todos = super::todo::mobile_entries();
+    let todos = super::todo::mobile_entries(content_width, palette);
     if todos.is_empty() {
         items.push(MobileItem {
             lines: vec![Line::from("  Nothing pending")],
@@ -619,12 +619,12 @@ fn mobile_items(
             target: None,
         });
     }
-    for (label, action) in todos {
+    for (lines, action) in todos {
         items.push(MobileItem {
-            lines: vec![Line::from(Span::styled(
-                label,
-                Style::default().fg(palette.text).bg(palette.panel_bg),
-            ))],
+            lines: lines
+                .into_iter()
+                .map(|(text, style)| Line::from(Span::styled(text, style.bg(palette.panel_bg))))
+                .collect(),
             background: palette.panel_bg,
             target: (!action.is_empty()).then_some(ClientMobileTarget::Todo(action)),
         });
